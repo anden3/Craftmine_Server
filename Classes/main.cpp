@@ -6,9 +6,13 @@
 #include <thread>
 #include <fstream>
 
-#include <ncurses.h>
-#include <enet/enet.h>
+#ifdef WIN32
+    #include <curses.h>
+#else
+    #include <ncurses.h>
+#endif
 
+#include <enet/enet.h>
 #include <json.hpp>
 
 const int DEFAULT_CHANNEL = 0;
@@ -308,7 +312,7 @@ void Input_Thread() {
     char str[80];
     
     while (!Exit) {
-        bzero(str, 80);
+		std::fill(str, str + 80, 0);
 
         mvwgetstr(Bottom, 1, 2, str);
         std::string message(str);
