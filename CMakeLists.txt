@@ -10,7 +10,9 @@ set (CMAKE_SHARED_LINKER_FLAGS /MACHINE:X64)
 set (CMAKE_STATIC_LINKER_FLAGS /MACHINE:X64)
 
 set (SOURCES
+    ${SOURCE_PATH}/Functions.cpp
     ${SOURCE_PATH}/main.cpp
+    ${SOURCE_PATH}/TUI.cpp
 )
 
 if (WIN32)

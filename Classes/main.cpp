@@ -1,19 +1,16 @@
-#include <map>
-#include <mutex>
-#include <chrono>
-#include <random>
-#include <string>
-#include <thread>
-#include <fstream>
+#include "main.h"
 
-#ifdef WIN32
-    #include <curses.h>
-#else
-    #include <ncurses.h>
-#endif
+#include <map>
+#include <fstream>
 
 #include <enet/enet.h>
 #include <json.hpp>
+
+#define GLM_SWIZZLE
+#include <glm/glm.hpp>
+
+#include "TUI.h"
+#include "Functions.h"
 
 const int DEFAULT_CHANNEL = 0;
 
@@ -29,125 +26,27 @@ static ENetAddress address;
 static ENetHost* server;
 
 static bool Verbose = false;
-static bool Exit = false;
 
-static std::mutex WriteLock;
-
-static int MaxX;
-static int MaxY;
-
-static int TopLine = 1;
-
-static WINDOW* Top;
-static WINDOW* Bottom;
-
-const std::map<char, short> ColorCodes = {
-    {'0', 232}, // Black
-    {'1', 17 }, // Dark Blue
-    {'2', 28 }, // Dark Green
-    {'3', 4  }, // Dark Aqua
-    {'4', 124}, // Dark Red
-    {'5', 91 }, // Dark Purple
-    {'6', 214}, // Gold
-    {'7', 242}, // Gray
-    {'8', 237}, // Dark Gray
-    {'9', 21 }, // Blue
-    {'a', 154}, // Green
-    {'b', 123}, // Aqua
-    {'c', 196}, // Red
-    {'d', 213}, // Light Purple
-    {'e', 226}, // Yellow
-    {'f', 255}  // White
+struct Player {
+    glm::vec3 Position;
+    float Pitch;
+    float Yaw;
 };
 
-void Write(std::string str);
+static std::map<std::string, Player> Players;
 
-std::vector<std::string> Split(const std::string &s, const char delim) {
-    std::vector<std::string> elements;
-    std::stringstream ss(s);
-    std::string item;
+bool Exit = false;
 
-    while (std::getline(ss, item, delim)) {
-        elements.push_back(item);
-    }
+void Init_Config();
+void Init_Connection(unsigned int host, int port);
 
-    return elements;
-}
+void Parse_Arguments(int count, char* args[]);
+void Check_Event(ENetEvent e);
 
-std::string Join(const std::vector<int> &list, const std::string joiner) {
-    std::string result = "";
-
-    for (unsigned long i = 0; i < list.size() - 1; ++i) {
-        result += std::to_string(list[i]) + joiner;
-    }
-
-    return result + std::to_string(list.back());
-}
-
-std::string Join(const std::vector<std::string> &list, const std::string joiner = " ") {
-    std::string result = "";
-
-    for (unsigned long i = 0; i < list.size() - 1; ++i) {
-        result += list[i] + joiner;
-    }
-
-    return result + list.back();
-}
-
-std::string To_String(enet_uint8* data) {
-    return std::string(reinterpret_cast<char*>(data));
-}
-
-std::string To_String(void* data) {
-    return std::string(static_cast<char*>(data));
-}
-
-std::string Get_Timestamp() {
-    time_t t = std::time(0);
-    struct tm* now = std::localtime(&t);
-
-    return Join({
-        now->tm_hour, now->tm_min, now->tm_sec
-    }, ":");
-}
-
-int Get_Seed() {
-    static std::uniform_int_distribution<int> uni(-2147483648, 2147483647);
-    static bool Initialized = false;
-    static std::mt19937_64 rng;
-
-    if (!Initialized) {
-        Initialized = true;
-
-        int64_t timeSeed = std::chrono::high_resolution_clock::now().time_since_epoch().count();
-        std::seed_seq ss {
-            static_cast<uint32_t>(timeSeed & 0xffffffff),
-            static_cast<uint32_t>(timeSeed >> 32)
-        };
-
-        rng.seed(ss);
-    }
-
-    return uni(rng);
-}
-
-template <typename T> std::string To_Hex(T value) {
-    std::stringstream ss;
-    ss << std::hex << value;
-    return ss.str();
-}
-
-void Init_Connection(unsigned int host, int port) {
-    enet_initialize();
-
-    address.host = host;
-    address.port = static_cast<unsigned short>(port);
-
-    server = enet_host_create(&address, 32, 2, 0, 0);
-    
-    Write("&6Ready!");
-    Write("");
-}
+void Player_Connect(ENetEvent &e, std::string name);
+void Player_Move(ENetEvent &e, nlohmann::json &data);
+void Chat_Message(ENetEvent &e, std::string message);
+void Block_Break(ENetEvent &e, std::string pos);
 
 void Send(unsigned int peerID, std::string message, int channel) {
     ENetPacket* packet = enet_packet_create(message.c_str(), message.length() + 1, ENET_PACKET_FLAG_RELIABLE);
@@ -157,6 +56,25 @@ void Send(unsigned int peerID, std::string message, int channel) {
 void Broadcast(std::string message, int channel) {
     ENetPacket* packet = enet_packet_create(message.c_str(), message.length() + 1, ENET_PACKET_FLAG_RELIABLE);
     enet_host_broadcast(server, static_cast<unsigned char>(channel), packet);
+}
+
+int main(int argc, char* argv[]) {
+    Init_Config();
+    Curses::Init();
+    Parse_Arguments(argc, argv);
+    Init_Connection(Host, Port);
+
+    while (!Exit) {
+        ENetEvent event;
+
+        while (enet_host_service(server, &event, 50) > 0) {
+            Check_Event(event);
+        }
+    }
+    
+    Curses::Clean_Up();
+    enet_deinitialize();
+    return 0;
 }
 
 void Init_Config() {
@@ -184,26 +102,15 @@ void Init_Config() {
     }
 }
 
-void Init_Curses() {
-    initscr();
-    start_color();
+void Init_Connection(unsigned int host, int port) {
+    enet_initialize();
 
-    getmaxyx(stdscr, MaxY, MaxX);
+    address.host = host;
+    address.port = static_cast<unsigned short>(port);
 
-    Top = newwin(MaxY - 3, MaxX, 0, 0);
-    Bottom = newwin(3, MaxX, MaxY - 3, 0);
-
-    scrollok(Top, TRUE);
-
-    box(Top, '|', '=');
-    box(Bottom, '|', '-');
-
-    wsetscrreg(Top, 1, MaxY - 5);
-    wsetscrreg(Bottom, 1, 1);
-
-    for (short i = 0; i < 256; ++i) {
-        init_pair(i, i, 0);
-    }
+    server = enet_host_create(&address, 32, 2, 0, 0);
+    
+    Curses::Write("&6Ready!", true);
 }
 
 void Parse_Arguments(int count, char* args[]) {
@@ -246,6 +153,111 @@ void Parse_Arguments(int count, char* args[]) {
     }
 }
 
+void Check_Event(ENetEvent e) {
+    if (e.type == ENET_EVENT_TYPE_NONE) {
+        return;
+    }
+
+    else if (e.type == ENET_EVENT_TYPE_CONNECT) {
+        Curses::Write("Peer connected from " + To_Hex(e.peer->address.host) + ":" + std::to_string(e.peer->address.port), true);
+        ConnectedPeers[e.peer->connectID] = e.peer;
+    }
+
+    else if (e.type == ENET_EVENT_TYPE_DISCONNECT) {
+        Curses::Write("&4" + *static_cast<std::string*>(e.peer->data) + " &fdisconnected", true);
+		PeerNames.erase(e.peer->connectID);
+        ConnectedPeers.erase(e.peer->connectID);
+    }
+
+    else if (e.type == ENET_EVENT_TYPE_RECEIVE) {
+        nlohmann::json j = nlohmann::json::parse(To_String(e.packet->data));
+
+        if (j["event"] == "connect") {
+            Player_Connect(e, j["name"]);
+        }
+
+        else if (j["event"] == "blockBreak") {
+            Block_Break(e, j["pos"]);
+        }
+
+        else if (j["event"] == "message") {
+            Chat_Message(e, j["message"]);
+        }
+
+        else if (j["event"] == "update") {
+            Player_Move(e, j);
+        }
+
+        if (Verbose) {
+            Curses::Write("PACKET RECEIVED");
+            Curses::Write("LENGTH: " + std::to_string(e.packet->dataLength));
+            Curses::Write("DATA: " + To_String(e.packet->data));
+            Curses::Write("SENDER: " + *static_cast<std::string*>(e.peer->data));
+            Curses::Write("CHANNEL ID: " + std::to_string(e.channelID), true);
+        }
+
+        enet_packet_destroy(e.packet);
+    }
+}
+
+void Player_Connect(ENetEvent &e, std::string name) {
+    PeerNames[e.peer->connectID] = name;
+    e.peer->data = &PeerNames[e.peer->connectID];
+    Players[name] = Player();
+
+    Curses::Write("&4" + name + " &fconnected.");
+
+    nlohmann::json response;
+    response["event"] = "config";
+    response["seed"] = Seed;
+    Send(e.peer->connectID, response.dump(), e.channelID);
+}
+
+void Player_Move(ENetEvent &e, nlohmann::json &data) {
+    Player &p = Players[*static_cast<std::string*>(e.peer->data)];
+
+    if (data.count("pos")) {
+        p.Position = glm::vec3(
+            data["pos"][0], data["pos"][1], data["pos"][2]
+        );
+    }
+
+    if (data.count("pitch")) {
+        p.Pitch = data["pitch"];
+    }
+
+    if (data.count("yaw")) {
+        p.Yaw = data["yaw"];
+    }
+
+    nlohmann::json response = data;
+    response["player"] = *static_cast<std::string*>(e.peer->data);
+
+    for (auto const &peer : ConnectedPeers) {
+        if (peer.first != e.peer->connectID) {
+            Send(peer.first, response.dump(), e.channelID);
+        }
+    }
+}
+
+void Chat_Message(ENetEvent &e, std::string message) {
+    Curses::Write("&4" + *static_cast<std::string*>(e.peer->data) + "&f: " + message);
+
+    nlohmann::json response;
+    response["event"] = "message";
+    response["message"] = message;
+    response["player"] = *static_cast<std::string*>(e.peer->data);
+    Broadcast(response.dump(), e.channelID);
+}
+
+void Block_Break(ENetEvent &e, std::string pos) {
+    nlohmann::json response;
+    response["event"] = "blockBreak";
+    response["pos"] = pos;
+    response["player"] = *static_cast<std::string*>(e.peer->data);
+    Broadcast(response.dump(), e.channelID);
+}
+
 void Parse_Commands(std::string &input) {
     auto arguments = Split(input, ' ');
 
@@ -257,189 +269,15 @@ void Parse_Commands(std::string &input) {
         std::string message = Join(std::vector<std::string>(arguments.begin() + 1, arguments.end()));
 
         nlohmann::json response;
-        response["events"]["message"]["value"] = message;
-        response["events"]["message"]["player"] = "&5Server&f";
+        response["event"] = "message";
+        response["message"] = message;
+        response["player"] = "&5Server&f";
         Broadcast(response.dump(), DEFAULT_CHANNEL);
 
         input = "&5Server&f: " + message;
     }
 
     else {
-        input = "";
+        input = "&3Error! &fInvalid command.";
     }
-}
-
-void Draw_Color_String(std::string str) {
-    int startPos = 0;
-    std::string partStr = "";
-    bool checkNext = false;
-    short currentColor = 7;
-
-    mvwprintw(Top, TopLine, 3, Get_Timestamp().c_str());
-
-    for (char const &c : str) {
-        if (c == '&') {
-            if (partStr.length() > 0) {
-                wattron(Top, COLOR_PAIR(currentColor));
-                mvwprintw(Top, TopLine, 15 + startPos, partStr.c_str());
-                wattroff(Top, COLOR_PAIR(currentColor));
-
-                startPos += partStr.length();
-
-                partStr.clear();
-            }
-
-            checkNext = true;
-            continue;
-        }
-
-        if (checkNext) {
-            checkNext = false;
-            currentColor = ColorCodes.at(c);
-            continue;
-        }
-
-        partStr += c;
-    }
-
-    if (partStr.length() > 0) {
-        wattron(Top, COLOR_PAIR(currentColor));
-        mvwprintw(Top, TopLine, 15 + startPos, partStr.c_str());
-        wattroff(Top, COLOR_PAIR(currentColor));
-    }
-}
-
-void Input_Thread() {
-    char str[80];
-    
-    while (!Exit) {
-		std::fill(str, str + 80, 0);
-
-        mvwgetstr(Bottom, 1, 2, str);
-        std::string message(str);
-
-        Parse_Commands(message);
-
-        if (message != "") {
-            Write(message);
-        }
-        else {
-            wmove(Bottom, 1, 2);
-        }
-
-        wclrtoeol(Bottom);
-        wrefresh(Bottom);
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-}
-
-void Write(std::string str) {
-    WriteLock.lock();
-
-    if (str != "") {
-        Draw_Color_String(str);
-    }
-
-    if (TopLine != (MaxY - 5)) {
-        ++TopLine;
-    }
-    else {
-        scroll(Top);
-        box(Top, '|', '=');
-    }
-
-    wrefresh(Top);
-    wmove(Bottom, 1, 2);
-
-    WriteLock.unlock();
-}
-
-void Check_Event(ENetEvent e) {
-    if (e.type == ENET_EVENT_TYPE_NONE) {
-        return;
-    }
-
-    else if (e.type == ENET_EVENT_TYPE_CONNECT) {
-        Write("Peer connected from " + To_Hex(e.peer->address.host) + ":" + std::to_string(e.peer->address.port));
-        Write("");
-
-        ConnectedPeers[e.peer->connectID] = e.peer;
-    }
-
-    else if (e.type == ENET_EVENT_TYPE_DISCONNECT) {
-        Write("&4" + PeerNames[e.peer->connectID] + " &fdisconnected");
-        Write("");
-
-		PeerNames.erase(e.peer->connectID);
-        ConnectedPeers.erase(e.peer->connectID);
-    }
-
-    else if (e.type == ENET_EVENT_TYPE_RECEIVE) {
-        nlohmann::json j = nlohmann::json::parse(To_String(e.packet->data));
-
-        for (nlohmann::json::iterator it = j["events"].begin(); it != j["events"].end(); ++it) {
-            nlohmann::json response;
-
-            if (it.key() == "connect") {
-				PeerNames[e.peer->connectID] = it.value()["name"].get<std::string>();
-                Write("&4" + it.value()["name"].get<std::string>() + " &fconnected.");
-
-                response["events"]["config"]["seed"] = Seed;
-                Send(e.peer->connectID, response.dump(), e.channelID);
-            }
-
-            else if (it.key() == "blockBreak") {
-                if (Verbose) {
-                    Write("BLOCK BROKEN");
-                    Write("AT POSITION: " + it.value()["pos"].get<std::string>());
-                    Write("BY: " + it.value()["player"].get<std::string>());
-                    Write("");
-                }
-
-                response["events"]["breakBlock"]["pos"] = it.value()["pos"];
-                response["events"]["breakBlock"]["player"] = it.value()["player"];
-                Broadcast(response.dump(), e.channelID);
-            }
-
-            else if (it.key() == "message") {
-                Write("&4" + PeerNames[e.peer->connectID] + "&f: " + j["events"]["message"].get<std::string>());
-
-                response["events"]["message"]["value"] = j["events"]["message"];
-                response["events"]["message"]["player"] = PeerNames[e.peer->connectID];
-                Broadcast(response.dump(), e.channelID);
-            }
-        }
-
-        if (Verbose) {
-            Write("PACKET RECEIVED");
-            Write("LENGTH: " + std::to_string(e.packet->dataLength));
-            Write("DATA: " + To_String(e.packet->data));
-            Write("SENDER: " + PeerNames[e.peer->connectID]);
-            Write("CHANNEL ID: " + std::to_string(e.channelID));
-            Write("");
-        }
-    }
-}
-
-int main(int argc, char* argv[]) {
-    Init_Config();
-    Init_Curses();
-    Parse_Arguments(argc, argv);
-    Init_Connection(Host, Port);
-
-    std::thread input(Input_Thread);
-
-    while (!Exit) {
-        ENetEvent event;
-
-        while (enet_host_service(server, &event, 50) > 0) {
-            Check_Event(event);
-        }
-    }
-
-    endwin();
-    input.join();
-    enet_deinitialize();
-    return 0;
 }
