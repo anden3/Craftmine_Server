@@ -17,9 +17,10 @@
 
 const int DEFAULT_CHANNEL = 0;
 
-static std::map<enet_uint32, ENetPeer*> ConnectedPeers;
+static std::map<unsigned int, ENetPeer*> ConnectedPeers;
+static std::map<unsigned int, std::string> PeerNames;
 
-static enet_uint32 Host = ENET_HOST_ANY;
+static unsigned int Host = ENET_HOST_ANY;
 static int Port = 1234;
 
 static int Seed = 0;
@@ -136,7 +137,7 @@ template <typename T> std::string To_Hex(T value) {
     return ss.str();
 }
 
-void Init_Connection(enet_uint32 host, int port) {
+void Init_Connection(unsigned int host, int port) {
     enet_initialize();
 
     address.host = host;
@@ -148,7 +149,7 @@ void Init_Connection(enet_uint32 host, int port) {
     Write("");
 }
 
-void Send(enet_uint32 peerID, std::string message, int channel) {
+void Send(unsigned int peerID, std::string message, int channel) {
     ENetPacket* packet = enet_packet_create(message.c_str(), message.length() + 1, ENET_PACKET_FLAG_RELIABLE);
     enet_peer_send(ConnectedPeers[peerID], static_cast<unsigned char>(channel), packet);
 }
@@ -367,9 +368,10 @@ void Check_Event(ENetEvent e) {
     }
 
     else if (e.type == ENET_EVENT_TYPE_DISCONNECT) {
-        Write("&4" + To_String(e.peer->data) + " &fdisconnected");
+        Write("&4" + PeerNames[e.peer->connectID] + " &fdisconnected");
         Write("");
 
+		PeerNames.erase(e.peer->connectID);
         ConnectedPeers.erase(e.peer->connectID);
     }
 
@@ -380,7 +382,7 @@ void Check_Event(ENetEvent e) {
             nlohmann::json response;
 
             if (it.key() == "connect") {
-                e.peer->data = const_cast<char*>(it.value()["name"].get<std::string>().c_str());
+				PeerNames[e.peer->connectID] = it.value()["name"].get<std::string>();
                 Write("&4" + it.value()["name"].get<std::string>() + " &fconnected.");
 
                 response["events"]["config"]["seed"] = Seed;
@@ -401,10 +403,10 @@ void Check_Event(ENetEvent e) {
             }
 
             else if (it.key() == "message") {
-                Write("&4" + To_String(e.peer->data) + "&f: " + j["events"]["message"].get<std::string>());
+                Write("&4" + PeerNames[e.peer->connectID] + "&f: " + j["events"]["message"].get<std::string>());
 
                 response["events"]["message"]["value"] = j["events"]["message"];
-                response["events"]["message"]["player"] = To_String(e.peer->data);
+                response["events"]["message"]["player"] = PeerNames[e.peer->connectID];
                 Broadcast(response.dump(), e.channelID);
             }
         }
@@ -413,7 +415,7 @@ void Check_Event(ENetEvent e) {
             Write("PACKET RECEIVED");
             Write("LENGTH: " + std::to_string(e.packet->dataLength));
             Write("DATA: " + To_String(e.packet->data));
-            Write("SENDER: " + To_String(e.peer->data));
+            Write("SENDER: " + PeerNames[e.peer->connectID]);
             Write("CHANNEL ID: " + std::to_string(e.channelID));
             Write("");
         }
