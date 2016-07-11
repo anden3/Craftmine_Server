@@ -9,8 +9,12 @@
 #define GLM_SWIZZLE
 #include <glm/glm.hpp>
 
+#include <boost/filesystem.hpp>
+
 #include "TUI.h"
 #include "Functions.h"
+
+std::string World = "";
 
 const int DEFAULT_CHANNEL = 0;
 
@@ -25,12 +29,29 @@ static int Seed = 0;
 static ENetAddress address;
 static ENetHost* server;
 
-static bool Verbose = false;
+static int Verbose = 0;
 
 struct Player {
     glm::vec3 Position;
     float Pitch;
     float Yaw;
+};
+
+struct Stack {
+    Stack() { Type = 0; Size = 0; }
+
+    Stack(std::string type, int size = 1) : Size(size) {
+        unsigned long delimPos = type.find(':');
+        Type = std::stoi(type.substr(0, delimPos));
+        if (delimPos != std::string::npos) { Data = std::stoi(type.substr(delimPos + 1)); }
+    }
+
+    Stack(int type, int size = 1) : Type(type), Size(size) {}
+    Stack(int type, int data, int size) : Type(type), Size(size), Data(data) {}
+
+    int Type;
+    int Size;
+    int Data = 0;
 };
 
 static std::map<std::string, Player> Players;
@@ -43,10 +64,13 @@ void Init_Connection(unsigned int host, int port);
 void Parse_Arguments(int count, char* args[]);
 void Check_Event(ENetEvent e);
 
-void Player_Connect(ENetEvent &e, std::string name);
-void Player_Move(ENetEvent &e, nlohmann::json &data);
 void Chat_Message(ENetEvent &e, std::string message);
+void Player_Move(ENetEvent &e, nlohmann::json &data);
+void Save_Player(ENetEvent &e, nlohmann::json &data);
+void Player_Connect(ENetEvent &e, std::string name);
 void Block_Break(ENetEvent &e, std::string pos);
+void Player_Disconnect(ENetEvent &e);
+void Load_Player(ENetEvent &e);
 
 void Send(unsigned int peerID, std::string message, int channel) {
     ENetPacket* packet = enet_packet_create(message.c_str(), message.length() + 1, ENET_PACKET_FLAG_RELIABLE);
@@ -56,6 +80,14 @@ void Send(unsigned int peerID, std::string message, int channel) {
 void Broadcast(std::string message, int channel) {
     ENetPacket* packet = enet_packet_create(message.c_str(), message.length() + 1, ENET_PACKET_FLAG_RELIABLE);
     enet_host_broadcast(server, static_cast<unsigned char>(channel), packet);
+}
+
+std::string Get_Name(ENetEvent &e) {
+    return *static_cast<std::string*>(e.peer->data);
+}
+
+std::string Get_Name(ENetPeer &peer) {
+    return *static_cast<std::string*>(peer.data);
 }
 
 int main(int argc, char* argv[]) {
@@ -90,6 +122,7 @@ void Init_Config() {
         properties["host"] = ENET_HOST_ANY;
         properties["port"] = Port;
         properties["seed"] = Seed;
+        properties["world"] = World;
 
         propFile << properties;
     }
@@ -99,6 +132,10 @@ void Init_Config() {
         Host = properties["host"];
         Port = properties["port"];
         Seed = properties["seed"];
+        World = properties["world"];
+
+        boost::filesystem::path newWorld("Worlds/" + World);
+        boost::filesystem::create_directory(newWorld);
     }
 }
 
@@ -118,7 +155,10 @@ void Parse_Arguments(int count, char* args[]) {
         std::string argument(args[i]);
 
         if (argument == "--verbose" || argument == "-v") {
-            Verbose = true;
+            Verbose = 1;
+        }
+        else if (argument == "--very-verbose" || argument == "-vv") {
+            Verbose = 2;
         }
         else if ((argument == "--host" || argument == "-h") && i + 1 < count) {
             std::string addr = args[++i];
@@ -164,9 +204,7 @@ void Check_Event(ENetEvent e) {
     }
 
     else if (e.type == ENET_EVENT_TYPE_DISCONNECT) {
-        Curses::Write("&4" + *static_cast<std::string*>(e.peer->data) + " &fdisconnected", true);
-		PeerNames.erase(e.peer->connectID);
-        ConnectedPeers.erase(e.peer->connectID);
+        Player_Disconnect(e);
     }
 
     else if (e.type == ENET_EVENT_TYPE_RECEIVE) {
@@ -188,11 +226,15 @@ void Check_Event(ENetEvent e) {
             Player_Move(e, j);
         }
 
-        if (Verbose) {
+        else if (j["event"] == "save") {
+            Save_Player(e, j);
+        }
+
+        if (Verbose == 2 || (Verbose == 1 && j["event"] != "update")) {
             Curses::Write("PACKET RECEIVED");
             Curses::Write("LENGTH: " + std::to_string(e.packet->dataLength));
             Curses::Write("DATA: " + To_String(e.packet->data));
-            Curses::Write("SENDER: " + *static_cast<std::string*>(e.peer->data));
+            Curses::Write("SENDER: " + Get_Name(e));
             Curses::Write("CHANNEL ID: " + std::to_string(e.channelID), true);
         }
 
@@ -210,11 +252,29 @@ void Player_Connect(ENetEvent &e, std::string name) {
     nlohmann::json response;
     response["event"] = "config";
     response["seed"] = Seed;
+    response["world"] = World;
     Send(e.peer->connectID, response.dump(), e.channelID);
+
+    Load_Player(e);
+}
+
+void Player_Disconnect(ENetEvent &e) {
+    Curses::Write("&4" + Get_Name(e) + " &fdisconnected", true);
+    Players.erase(Get_Name(e));
+
+    unsigned int connectID;
+
+    for (auto const &peer : ConnectedPeers) {
+        if (peer.second->data == e.peer->data) {
+            connectID = peer.first;
+        }
+    }
+    PeerNames.erase(connectID);
+    ConnectedPeers.erase(connectID);
 }
 
 void Player_Move(ENetEvent &e, nlohmann::json &data) {
-    Player &p = Players[*static_cast<std::string*>(e.peer->data)];
+    Player &p = Players[Get_Name(e)];
 
     if (data.count("pos")) {
         p.Position = glm::vec3(
@@ -231,7 +291,8 @@ void Player_Move(ENetEvent &e, nlohmann::json &data) {
     }
 
     nlohmann::json response = data;
-    response["player"] = *static_cast<std::string*>(e.peer->data);
+    response["event"] = "update";
+    response["player"] = Get_Name(e);
 
     for (auto const &peer : ConnectedPeers) {
         if (peer.first != e.peer->connectID) {
@@ -240,21 +301,41 @@ void Player_Move(ENetEvent &e, nlohmann::json &data) {
     }
 }
 
-void Chat_Message(ENetEvent &e, std::string message) {
-    Curses::Write("&4" + *static_cast<std::string*>(e.peer->data) + "&f: " + message);
+void Load_Player(ENetEvent &e) {
+    std::ifstream dataFile("Worlds/" + World + "/" + Get_Name(e) + ".json");
 
-    nlohmann::json response;
-    response["event"] = "message";
-    response["message"] = message;
-    response["player"] = *static_cast<std::string*>(e.peer->data);
-    Broadcast(response.dump(), e.channelID);
+    if (dataFile.good()) {
+        nlohmann::json playerData;
+        playerData << dataFile;
+
+        playerData["event"] = "load";
+        Send(e.peer->connectID, playerData.dump(), e.channelID);
+    }
+}
+
+void Save_Player(ENetEvent &e, nlohmann::json &data) {
+    std::ofstream dataFile(
+        "Worlds/" + World + "/" + Get_Name(e) + ".json",
+        std::ofstream::trunc
+    );
+    dataFile << data;
 }
 
 void Block_Break(ENetEvent &e, std::string pos) {
     nlohmann::json response;
     response["event"] = "blockBreak";
     response["pos"] = pos;
-    response["player"] = *static_cast<std::string*>(e.peer->data);
+    response["player"] = Get_Name(e);
+    Broadcast(response.dump(), e.channelID);
+}
+
+void Chat_Message(ENetEvent &e, std::string message) {
+    Curses::Write("&4" + Get_Name(e) + "&f: " + message);
+
+    nlohmann::json response;
+    response["event"] = "message";
+    response["message"] = message;
+    response["player"] = Get_Name(e);
     Broadcast(response.dump(), e.channelID);
 }
 

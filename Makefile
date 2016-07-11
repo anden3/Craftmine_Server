@@ -4,7 +4,7 @@ DIRECTORY=$(shell pwd)
 HEADER_PATHS=-iquote Build/Classes -I /usr/local/include \
 	-isystem /usr/local/include/freetype2
 
-LIBRARIES=enet ncurses
+LIBRARIES=boost_filesystem boost_system enet ncurses
 
 LIBRARY_FLAGS=$(addprefix -l,$(LIBRARIES))
 FRAMEWORK_FLAGS=$(addprefix -framework ,$(FRAMEWORKS))
