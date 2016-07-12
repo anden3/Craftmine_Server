@@ -2,6 +2,8 @@
 
 #include <string>
 
+extern std::string World;
+
 extern bool Exit;
 
 void Parse_Commands(std::string &input);

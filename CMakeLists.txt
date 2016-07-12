@@ -16,11 +16,11 @@ set (SOURCES
 )
 
 if (WIN32)
-    set (LIBRARIES enet pdcurses winmm ws2_32)
+    set (LIBRARIES boost_filesystem boost_system enet pdcurses winmm ws2_32)
     set (INCLUDE_DIRS ${SOURCE_PATH} C:/Users/include)
     set (LIBRARY_DIRS C:/Users/lib)
 elseif (APPLE)
-    set (LIBRARIES enet ncurses)
+    set (LIBRARIES boost_filesystem boost_system enet ncurses)
     set (INCLUDE_DIRS ${SOURCE_PATH} /usr/local/include)
     set (LIBRARY_DIRS /usr/local/lib)
 endif()

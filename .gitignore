@@ -1,5 +1,7 @@
 .vscode/
-Build/
+Build/Data/
+Build/Worlds/
+Build/Craftmine_Server
 
 Craftmine_Server.exe
 Craftmine_Server.ilk
