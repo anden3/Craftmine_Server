@@ -1,5 +1,6 @@
 #include "Functions.h"
 
+#include <ctime>
 #include <chrono>
 #include <random>
 #include <sstream>
