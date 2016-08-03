@@ -146,7 +146,7 @@ void Draw_Color_String(std::string str) {
                 mvwprintw(Top, TopLine, 15 + startPos, partStr.c_str());
                 wattroff(Top, COLOR_PAIR(currentColor));
 
-                startPos += partStr.length();
+                startPos += static_cast<int>(partStr.length());
 
                 partStr.clear();
             }

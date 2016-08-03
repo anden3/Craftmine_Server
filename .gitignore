@@ -1,4 +1,5 @@
 .vscode/
+Build/CMake/
 Build/Data/
 Build/Worlds/
 Build/Craftmine_Server

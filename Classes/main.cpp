@@ -34,14 +34,14 @@ static int Verbose = 0;
 struct Player {
     glm::vec3 Position;
     float Pitch;
-    float Yaw;
+	float Yaw;
 };
 
 struct Stack {
     Stack() { Type = 0; Size = 0; }
 
     Stack(std::string type, int size = 1) : Size(size) {
-        unsigned long delimPos = type.find(':');
+		size_t delimPos = type.find(':');
         Type = std::stoi(type.substr(0, delimPos));
         if (delimPos != std::string::npos) { Data = std::stoi(type.substr(delimPos + 1)); }
     }
@@ -87,8 +87,9 @@ std::string Get_Name(ENetEvent &e) {
 }
 
 std::string Get_Name(ENetPeer &peer) {
-    return *static_cast<std::string*>(peer.data);
+	return *static_cast<std::string*>(peer.data);
 }
+
 
 int main(int argc, char* argv[]) {
     Init_Config();
